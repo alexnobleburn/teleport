@@ -9,9 +9,11 @@ jobs:
           - os: windows-latest
             cgo: '0'
             binary: teleport.exe
+            race: '-race'
           - os: macos-latest
             cgo: '1'
             binary: teleport
+            race: ''
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: ${{ matrix.cgo }}
@@ -28,7 +30,8 @@ jobs:
       - run: go vet ./...
 
       # Skip clipboard tests that require a desktop session (CI runners are headless).
-      - run: go test ./internal/transport/... ./internal/discovery/... ./internal/staging/... -race -count=1
+      # -race requires cgo C compiler; skip on macOS to avoid toolchain issues.
+      - run: go test ./internal/transport/... ./internal/discovery/... ./internal/staging/... ${{ matrix.race }} -count=1
 
       - uses: actions/upload-artifact@v4
         with:
