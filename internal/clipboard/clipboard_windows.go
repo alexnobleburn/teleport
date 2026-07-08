@@ -48,7 +48,6 @@ const (
 	gmemMoveable       = 0x0002
 	wmClipboardUpdate  = 0x031D
 	wmQuit             = 0x0012
-	hwndMessage        = ^uintptr(2) // HWND_MESSAGE = (HWND)-3
 )
 
 // WNDCLASSEXW size = 80 on 64-bit
@@ -102,7 +101,7 @@ func (c *windowsClipboard) Watch(ctx context.Context) (<-chan ClipData, error) {
 		defer runtime.UnlockOSThread()
 		defer close(ch)
 
-		hwnd, err := c.createMessageWindow()
+		hwnd, err := c.createHiddenWindow()
 		if err != nil {
 			ready <- err
 			return
@@ -166,7 +165,7 @@ func (c *windowsClipboard) Watch(ctx context.Context) (<-chan ClipData, error) {
 	return ch, nil
 }
 
-func (c *windowsClipboard) createMessageWindow() (uintptr, error) {
+func (c *windowsClipboard) createHiddenWindow() (uintptr, error) {
 	className := utf16.Encode([]rune("TeleportClipboardWatcher\x00"))
 
 	wndProc := syscall.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
@@ -182,11 +181,14 @@ func (c *windowsClipboard) createMessageWindow() (uintptr, error) {
 
 	registerClassExW.Call(uintptr(unsafe.Pointer(&wcx)))
 
+	// Create a regular hidden window (hWndParent=0), NOT a message-only window.
+	// AddClipboardFormatListener may not deliver WM_CLIPBOARDUPDATE to
+	// message-only windows (HWND_MESSAGE).
 	hwnd, _, err := createWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(&className[0])),
 		0, 0, 0, 0, 0, 0,
-		hwndMessage, 0, 0, 0,
+		0, 0, 0, 0, // hWndParent=0 (desktop), not HWND_MESSAGE
 	)
 	if hwnd == 0 {
 		return 0, fmt.Errorf("CreateWindowExW: %w", err)
