@@ -41,9 +41,10 @@ type Sender interface {
 
 // Listener accepts incoming encrypted TCP connections.
 type Listener interface {
-	// Accept accepts incoming connections and calls handler for each message.
+	// Accept accepts incoming connections. For each connection, calls newHandler()
+	// to create a per-connection ReceiveHandler (avoids shared mutable state).
 	// Blocking, cancelled via ctx.
-	Accept(ctx context.Context, handler ReceiveHandler) error
+	Accept(ctx context.Context, newHandler func() ReceiveHandler) error
 	// Addr returns the listen address (host:port).
 	Addr() string
 	Close() error

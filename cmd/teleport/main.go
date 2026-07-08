@@ -12,6 +12,7 @@ import (
 
 	"teleport/internal/clipboard"
 	"teleport/internal/discovery"
+	"teleport/internal/staging"
 	"teleport/internal/sync"
 	"teleport/internal/transport"
 )
@@ -60,6 +61,14 @@ func main() {
 		disc = discovery.NewMulticast(*name, *port, logger)
 	}
 
+	// Staging
+	stager, err := staging.New(logger)
+	if err != nil {
+		logger.Error("failed to create staging directory", "error", err)
+		os.Exit(1)
+	}
+	logger.Debug("staging directory", "path", stager.Path())
+
 	// Transport Listener
 	lst, err := transport.NewListener(*port, *pass, logger)
 	if err != nil {
@@ -69,7 +78,7 @@ func main() {
 	defer lst.Close()
 
 	// Sync Engine
-	eng := sync.New(clip, disc, lst, *pass, *name, *textOnly, logger)
+	eng := sync.New(clip, disc, lst, stager, *pass, *name, *textOnly, logger)
 
 	// Graceful shutdown. os.Interrupt only — SIGTERM is not supported on Windows.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

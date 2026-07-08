@@ -34,7 +34,6 @@ import "C"
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -82,12 +81,12 @@ func (c *darwinClipboard) Watch(ctx context.Context) (<-chan ClipData, error) {
 				}
 				c.lastChangeCount = cc
 
-				text := c.readText()
-				if text == "" {
+				// Check files first (Finder sets both file refs and text)
+				data, hash := c.readCurrent()
+				if data.Kind == KindText && data.Text == "" {
 					continue
 				}
 
-				hash := HashText(text)
 				c.mu.Lock()
 				if hash == c.lastHash {
 					c.mu.Unlock()
@@ -97,13 +96,26 @@ func (c *darwinClipboard) Watch(ctx context.Context) (<-chan ClipData, error) {
 				c.mu.Unlock()
 
 				select {
-				case ch <- ClipData{Kind: KindText, Text: text}:
+				case ch <- data:
 				default:
 				}
 			}
 		}
 	}()
 	return ch, nil
+}
+
+func (c *darwinClipboard) readCurrent() (ClipData, [32]byte) {
+	// Files take priority (Finder sets both file refs and text)
+	files, err := c.readFilesMeta()
+	if err == nil && len(files) > 0 {
+		hash := HashFiles(files)
+		return ClipData{Kind: KindFiles, Files: files}, hash
+	}
+
+	text := c.readText()
+	hash := HashText(text)
+	return ClipData{Kind: KindText, Text: text}, hash
 }
 
 func (c *darwinClipboard) readText() string {
@@ -130,11 +142,11 @@ func (c *darwinClipboard) SetText(text string) ([32]byte, error) {
 }
 
 func (c *darwinClipboard) SetFileRefs(paths []string) ([32]byte, error) {
-	// TODO: Phase 2.2 — NSFilenamesPboardType
-	return [32]byte{}, errors.New("not implemented")
+	return c.setFileRefsImpl(paths)
 }
 
 func (c *darwinClipboard) Hash() ([32]byte, error) {
-	text := c.readText()
-	return HashText(text), nil
+	_, hash := c.readCurrent()
+	return hash, nil
 }
+

@@ -10,9 +10,15 @@ import (
 )
 
 // SecureConn wraps a net.Conn with AES-256-GCM encryption per frame.
-// Send serialization is handled at the Sender level (single-writer goroutine).
-// Read serialization is handled by the read loop (single reader per connection).
-// SecureConn itself has NO mutexes — callers must ensure single-reader, single-writer.
+//
+// Threading contract:
+//   - WRITES: must be serialized by caller. Outbound connections use Sender's
+//     single-writer goroutine. Inbound connections write only MsgPong from
+//     the read loop — no Sender is created on accepted connections.
+//   - READS: must be serialized by caller. The read loop (listenerImpl.readLoop)
+//     is the sole reader, including file chunk reads in handleFileTransfer.
+//
+// SecureConn itself has NO mutexes.
 type SecureConn struct {
 	raw     net.Conn
 	aead    cipher.AEAD

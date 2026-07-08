@@ -195,7 +195,13 @@ func (c *windowsClipboard) createMessageWindow() (uintptr, error) {
 }
 
 func (c *windowsClipboard) readCurrent() (ClipData, [32]byte, error) {
-	// Try text
+	// CF_HDROP takes priority over CF_UNICODETEXT because Explorer sets both
+	files, err := c.readFiles()
+	if err == nil && len(files) > 0 {
+		hash := HashFiles(files)
+		return ClipData{Kind: KindFiles, Files: files}, hash, nil
+	}
+
 	text, err := c.readText()
 	if err != nil {
 		return ClipData{}, [32]byte{}, err
@@ -288,8 +294,7 @@ func (c *windowsClipboard) SetText(text string) ([32]byte, error) {
 }
 
 func (c *windowsClipboard) SetFileRefs(paths []string) ([32]byte, error) {
-	// TODO: Phase 2.2 — CF_HDROP / DROPFILES
-	return [32]byte{}, errors.New("not implemented")
+	return c.setFileRefsImpl(paths)
 }
 
 func (c *windowsClipboard) Hash() ([32]byte, error) {

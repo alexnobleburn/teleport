@@ -32,7 +32,7 @@ func NewListener(port int, password string, logger *slog.Logger) (Listener, erro
 	}, nil
 }
 
-func (l *listenerImpl) Accept(ctx context.Context, handler ReceiveHandler) error {
+func (l *listenerImpl) Accept(ctx context.Context, newHandler func() ReceiveHandler) error {
 	for {
 		raw, err := l.ln.Accept()
 		if err != nil {
@@ -45,6 +45,7 @@ func (l *listenerImpl) Accept(ctx context.Context, handler ReceiveHandler) error
 			l.logger.Error("accept failed", "error", err)
 			continue
 		}
+		handler := newHandler() // per-connection handler, no shared mutable state
 		go l.handleConn(ctx, raw, handler)
 	}
 }

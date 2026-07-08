@@ -2,11 +2,15 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"io"
 	"log/slog"
+	"os"
 	"sync"
 
 	"teleport/internal/clipboard"
 	"teleport/internal/discovery"
+	"teleport/internal/staging"
 	"teleport/internal/transport"
 )
 
@@ -15,6 +19,7 @@ type Engine struct {
 	clip     clipboard.Clipboard
 	disc     discovery.Discovery
 	listener transport.Listener
+	stager   *staging.Manager
 	password string
 	name     string
 	logger   *slog.Logger
@@ -23,9 +28,9 @@ type Engine struct {
 	lastSetHash [32]byte
 	mu          sync.Mutex
 
-	sender      transport.Sender
-	senderAddr  string // address of connected peer (for dedup)
-	senderMu    sync.Mutex
+	sender     transport.Sender
+	senderAddr string
+	senderMu   sync.Mutex
 }
 
 // New creates a new sync engine.
@@ -33,6 +38,7 @@ func New(
 	clip clipboard.Clipboard,
 	disc discovery.Discovery,
 	listener transport.Listener,
+	stager *staging.Manager,
 	password, name string,
 	textOnly bool,
 	logger *slog.Logger,
@@ -41,6 +47,7 @@ func New(
 		clip:     clip,
 		disc:     disc,
 		listener: listener,
+		stager:   stager,
 		password: password,
 		name:     name,
 		textOnly: textOnly,
@@ -57,17 +64,18 @@ func (e *Engine) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	fatalErr := make(chan error, 4)
 
-	// 1. Listener: accept incoming TCP connections
+	// 1. Listener: accept incoming TCP connections (per-connection handler)
 	if e.listener != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.listener.Accept(ctx, &receiveHandler{engine: e}); err != nil {
-				if ctx.Err() == nil {
-					e.logger.Error("listener failed", "error", err)
-					fatalErr <- err
-					cancel()
-				}
+			err := e.listener.Accept(ctx, func() transport.ReceiveHandler {
+				return &receiveHandler{engine: e}
+			})
+			if err != nil && ctx.Err() == nil {
+				e.logger.Error("listener failed", "error", err)
+				fatalErr <- err
+				cancel()
 			}
 		}()
 	}
@@ -98,12 +106,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := e.clipboardLoop(ctx); err != nil {
-			if ctx.Err() == nil {
-				e.logger.Error("clipboard watch failed", "error", err)
-				fatalErr <- err
-				cancel()
-			}
+		if err := e.clipboardLoop(ctx); err != nil && ctx.Err() == nil {
+			e.logger.Error("clipboard watch failed", "error", err)
+			fatalErr <- err
+			cancel()
 		}
 	}()
 
@@ -220,19 +226,64 @@ func (e *Engine) handleClipboardChange(data clipboard.ClipData) {
 		if e.textOnly {
 			return
 		}
-		// TODO: Phase 2 — send files
-		e.logger.Warn("file sync not implemented yet", "count", len(data.Files))
+		e.sendFiles(s, data.Files)
 	}
 }
 
-// setSender is called by the listener when an inbound connection establishes.
-func (e *Engine) setSender(s transport.Sender) {
-	e.senderMu.Lock()
-	old := e.sender
-	e.sender = s
-	e.senderAddr = ""
-	e.senderMu.Unlock()
-	if old != nil {
-		old.Close()
+// sendFiles opens, hashes, and sends files one at a time (O(1) file descriptors).
+// SHA-256 is computed from the same open file handle that is used for sending
+// (seek back to 0 after hashing) to avoid TOCTOU issues.
+func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
+	var toSend []transport.FileToSend
+
+	for _, f := range files {
+		file, err := os.Open(f.LocalPath)
+		if err != nil {
+			e.logger.Warn("cannot open file for sending", "path", f.LocalPath, "error", err)
+			continue
+		}
+
+		// Compute SHA-256 from the open handle
+		h := sha256.New()
+		if _, err := io.Copy(h, file); err != nil {
+			file.Close()
+			e.logger.Warn("cannot hash file", "path", f.LocalPath, "error", err)
+			continue
+		}
+		var checksum [32]byte
+		copy(checksum[:], h.Sum(nil))
+
+		// Seek back to beginning for reading
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			file.Close()
+			e.logger.Warn("cannot seek file", "path", f.LocalPath, "error", err)
+			continue
+		}
+
+		toSend = append(toSend, transport.FileToSend{
+			Name:     f.Name,
+			Size:     f.Size,
+			Checksum: checksum,
+			Reader:   file,
+		})
 	}
+
+	if len(toSend) == 0 {
+		return
+	}
+
+	err := s.SendFiles(toSend)
+
+	// Close all files after sending (whether successful or not)
+	for _, f := range toSend {
+		if closer, ok := f.Reader.(io.Closer); ok {
+			closer.Close()
+		}
+	}
+
+	if err != nil {
+		e.logger.Error("send files failed", "error", err)
+		return
+	}
+	e.logger.Info("files synced", "count", len(toSend), "direction", "sent")
 }
