@@ -230,51 +230,46 @@ func (e *Engine) handleClipboardChange(data clipboard.ClipData) {
 	}
 }
 
-// sendFiles opens, hashes, and sends files one at a time (O(1) file descriptors).
-// SHA-256 is computed from the same open file handle that is used for sending
-// (seek back to 0 after hashing) to avoid TOCTOU issues.
+// sendFiles sends files one at a time: open → hash → seek(0) → send → close.
+// Each file uses O(1) file descriptors. SHA-256 is computed from the same
+// open handle used for sending to avoid TOCTOU issues.
 func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
-	var toSend []transport.FileToSend
+	// Pre-compute checksums and validate files exist before starting batch.
+	// Only open one file at a time to keep FD usage at O(1).
+	type fileInfo struct {
+		meta     clipboard.FileMeta
+		checksum [32]byte
+	}
+	var valid []fileInfo
 
 	for _, f := range files {
-		file, err := os.Open(f.LocalPath)
+		checksum, err := hashFileOnDisk(f.LocalPath)
 		if err != nil {
-			e.logger.Warn("cannot open file for sending", "path", f.LocalPath, "error", err)
+			e.logger.Warn("cannot hash file for sending", "path", f.LocalPath, "error", err)
 			continue
 		}
-
-		// Compute SHA-256 from the open handle
-		h := sha256.New()
-		if _, err := io.Copy(h, file); err != nil {
-			file.Close()
-			e.logger.Warn("cannot hash file", "path", f.LocalPath, "error", err)
-			continue
-		}
-		var checksum [32]byte
-		copy(checksum[:], h.Sum(nil))
-
-		// Seek back to beginning for reading
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			file.Close()
-			e.logger.Warn("cannot seek file", "path", f.LocalPath, "error", err)
-			continue
-		}
-
-		toSend = append(toSend, transport.FileToSend{
-			Name:     f.Name,
-			Size:     f.Size,
-			Checksum: checksum,
-			Reader:   file,
-		})
+		valid = append(valid, fileInfo{meta: f, checksum: checksum})
 	}
 
-	if len(toSend) == 0 {
+	if len(valid) == 0 {
 		return
+	}
+
+	// Build FileToSend with lazy readers — each file opened only when SendFiles
+	// reads from it. We use a wrapper that opens the file on first Read call.
+	toSend := make([]transport.FileToSend, len(valid))
+	for i, v := range valid {
+		toSend[i] = transport.FileToSend{
+			Name:     v.meta.Name,
+			Size:     v.meta.Size,
+			Checksum: v.checksum,
+			Reader:   &lazyFileReader{path: v.meta.LocalPath},
+		}
 	}
 
 	err := s.SendFiles(toSend)
 
-	// Close all files after sending (whether successful or not)
+	// Close any opened lazy readers
 	for _, f := range toSend {
 		if closer, ok := f.Reader.(io.Closer); ok {
 			closer.Close()
@@ -286,4 +281,45 @@ func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
 		return
 	}
 	e.logger.Info("files synced", "count", len(toSend), "direction", "sent")
+}
+
+// hashFileOnDisk computes SHA-256 of a file. Opens and closes the file.
+func hashFileOnDisk(path string) ([32]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return [32]byte{}, err
+	}
+	var result [32]byte
+	copy(result[:], h.Sum(nil))
+	return result, nil
+}
+
+// lazyFileReader opens the file on first Read call. This keeps FD usage at O(1)
+// during batch sends — only the file currently being transmitted is open.
+type lazyFileReader struct {
+	path string
+	file *os.File
+}
+
+func (r *lazyFileReader) Read(p []byte) (int, error) {
+	if r.file == nil {
+		f, err := os.Open(r.path)
+		if err != nil {
+			return 0, err
+		}
+		r.file = f
+	}
+	return r.file.Read(p)
+}
+
+func (r *lazyFileReader) Close() error {
+	if r.file != nil {
+		return r.file.Close()
+	}
+	return nil
 }

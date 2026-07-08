@@ -28,8 +28,12 @@ func main() {
 	logJSON := flag.Bool("log-json", false, "output logs in JSON format")
 	flag.Parse()
 
+	// Password: CLI flag takes priority, then env variable
 	if *pass == "" {
-		fmt.Fprintln(os.Stderr, "error: -pass is required")
+		*pass = os.Getenv("TELEPORT_PASS")
+	}
+	if *pass == "" {
+		fmt.Fprintln(os.Stderr, "error: -pass flag or TELEPORT_PASS env variable is required")
 		flag.Usage()
 		os.Exit(1)
 	}

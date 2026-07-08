@@ -1,16 +1,36 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            cgo: '0'
+            binary: teleport.exe
+          - os: macos-latest
+            cgo: '1'
+            binary: teleport
     runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - run: go build ./...
+          cache: true
+
+      - run: go build -o ${{ matrix.binary }} ./cmd/teleport
+
       - run: go vet ./...
-      - run: go test ./... -race -count=1
+
+      # Skip clipboard tests that require a desktop session (CI runners are headless).
+      - run: go test ./internal/transport/... ./internal/discovery/... ./internal/staging/... -race -count=1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teleport-${{ runner.os }}
+          path: ${{ matrix.binary }}

@@ -26,7 +26,7 @@ func New(logger *slog.Logger) (*Manager, error) {
 		return nil, err
 	}
 	dir := filepath.Join(home, stagingDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	return &Manager{dir: dir, logger: logger}, nil
@@ -37,9 +37,14 @@ func New(logger *slog.Logger) (*Manager, error) {
 // After writing, verifies SHA-256 checksum. On mismatch, deletes the file and returns error.
 // Returns the full path of the staged file.
 func (m *Manager) Stage(name string, size int64, checksum [32]byte, r io.Reader) (string, error) {
+	// Idempotent recreate if directory was deleted while running
+	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+		return "", fmt.Errorf("ensure staging dir: %w", err)
+	}
+
 	path := m.uniquePath(name)
 
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create staged file: %w", err)
 	}
