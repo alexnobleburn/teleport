@@ -148,9 +148,9 @@ func TestHumanSize(t *testing.T) {
 		{1073741824, "1.0 GB"},
 	}
 	for _, tt := range tests {
-		got := humanSize(tt.bytes)
+		got := HumanSize(tt.bytes)
 		if got != tt.want {
-			t.Errorf("humanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
+			t.Errorf("HumanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
 		}
 	}
 }

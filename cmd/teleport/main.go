@@ -96,6 +96,8 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Debug("staging directory", "path", stager.Path())
+	// Auto-cleanup: remove staged files older than 1 hour, check every 10 minutes
+	stager.StartCleaner(context.Background(), 1*time.Hour, 10*time.Minute)
 
 	// Transport Listener (bind to localAddr if VPN bypass, otherwise all interfaces)
 	listenAddr := fmt.Sprintf(":%d", *port)

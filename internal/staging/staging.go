@@ -1,6 +1,7 @@
 package staging
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -67,12 +68,11 @@ func (m *Manager) Stage(name string, size int64, checksum [32]byte, r io.Reader)
 		return "", fmt.Errorf("checksum mismatch for %q: expected %x, got %x", name, checksum[:8], actual[:8])
 	}
 
-	m.logger.Info("file staged", "name", name, "size", humanSize(written), "path", path)
+	m.logger.Info("file staged", "name", name, "size", HumanSize(written), "path", path)
 	return path, nil
 }
 
 // uniquePath returns a non-colliding path in the staging directory.
-// "report.pdf" → "report.pdf", "report_1.pdf", "report_2.pdf", ...
 func (m *Manager) uniquePath(name string) string {
 	path := filepath.Join(m.dir, name)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -122,7 +122,24 @@ func (m *Manager) Clean(maxAge time.Duration) (int, error) {
 	return removed, nil
 }
 
-func humanSize(bytes int64) string {
+// StartCleaner runs a goroutine that periodically removes old staged files.
+func (m *Manager) StartCleaner(ctx context.Context, maxAge, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.Clean(maxAge)
+			}
+		}
+	}()
+}
+
+// HumanSize formats bytes as a human-readable string.
+func HumanSize(bytes int64) string {
 	switch {
 	case bytes >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))

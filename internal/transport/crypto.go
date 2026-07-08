@@ -8,12 +8,24 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+
+	"golang.org/x/crypto/scrypt"
 )
 
-// deriveKey computes master key from password using SHA-256.
-// MVP: direct SHA-256. Phase 3: replace with scrypt.
+// deriveKey computes master key from password using scrypt.
+// Fixed salt is necessary because both peers must independently derive
+// the same master key from the same password. The real protection against
+// nonce reuse is in session key derivation (HKDF + random salt per connection).
 func deriveKey(password string) [32]byte {
-	return sha256.Sum256([]byte(password))
+	salt := []byte("teleport-master-v1")
+	key, err := scrypt.Key([]byte(password), salt, 32768, 8, 1, 32)
+	if err != nil {
+		// scrypt only fails on invalid parameters, which are hardcoded
+		panic(fmt.Sprintf("scrypt.Key: %v", err))
+	}
+	var result [32]byte
+	copy(result[:], key)
+	return result
 }
 
 // deriveSessionKey derives a unique session key via HKDF-SHA256.

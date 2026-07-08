@@ -196,6 +196,20 @@ func (e *Engine) connectToPeer(peer discovery.Peer) {
 	e.logger.Info("connected", "peer", peer.Name, "addr", peer.Addr)
 }
 
+// disconnectPeer closes the current sender and resets it to nil.
+// Discovery will detect sender==nil and attempt reconnection.
+func (e *Engine) disconnectPeer() {
+	e.senderMu.Lock()
+	old := e.sender
+	e.sender = nil
+	e.senderAddr = ""
+	e.senderMu.Unlock()
+	if old != nil {
+		old.Close()
+		e.logger.Warn("disconnected from peer, will reconnect")
+	}
+}
+
 func (e *Engine) clipboardLoop(ctx context.Context) error {
 	changes, err := e.clip.Watch(ctx)
 	if err != nil {
@@ -244,7 +258,8 @@ func (e *Engine) handleClipboardChange(data clipboard.ClipData) {
 	switch data.Kind {
 	case clipboard.KindText:
 		if err := s.SendText(data.Text); err != nil {
-			e.logger.Error("send text failed", "error", err)
+			e.logger.Warn("send text failed, disconnecting", "error", err)
+			e.disconnectPeer()
 			return
 		}
 		e.logger.Info("text synced", "bytes", len(data.Text), "direction", "sent")
@@ -304,7 +319,8 @@ func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
 	}
 
 	if err != nil {
-		e.logger.Error("send files failed", "error", err)
+		e.logger.Warn("send files failed, disconnecting", "error", err)
+		e.disconnectPeer()
 		return
 	}
 	e.logger.Info("files synced", "count", len(toSend), "direction", "sent")
