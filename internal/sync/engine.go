@@ -16,14 +16,15 @@ import (
 
 // Engine is the main synchronization loop.
 type Engine struct {
-	clip     clipboard.Clipboard
-	disc     discovery.Discovery
-	listener transport.Listener
-	stager   *staging.Manager
-	password string
-	name     string
-	logger   *slog.Logger
-	textOnly bool
+	clip      clipboard.Clipboard
+	disc      discovery.Discovery
+	listener  transport.Listener
+	stager    *staging.Manager
+	password  string
+	name      string
+	logger    *slog.Logger
+	textOnly  bool
+	localAddr string // if set, bind outgoing TCP to this IP (VPN bypass)
 
 	lastSetHash [32]byte
 	mu          sync.Mutex
@@ -34,6 +35,7 @@ type Engine struct {
 }
 
 // New creates a new sync engine.
+// localAddr is optional — if non-empty, outgoing TCP connections bind to this IP.
 func New(
 	clip clipboard.Clipboard,
 	disc discovery.Discovery,
@@ -41,17 +43,19 @@ func New(
 	stager *staging.Manager,
 	password, name string,
 	textOnly bool,
+	localAddr string,
 	logger *slog.Logger,
 ) *Engine {
 	return &Engine{
-		clip:     clip,
-		disc:     disc,
-		listener: listener,
-		stager:   stager,
-		password: password,
-		name:     name,
-		textOnly: textOnly,
-		logger:   logger,
+		clip:      clip,
+		disc:      disc,
+		listener:  listener,
+		stager:    stager,
+		password:  password,
+		name:      name,
+		textOnly:  textOnly,
+		localAddr: localAddr,
+		logger:    logger,
 	}
 }
 
@@ -159,7 +163,7 @@ func (e *Engine) connectToPeer(peer discovery.Peer) {
 	e.senderMu.Unlock()
 
 	e.logger.Info("connecting to peer", "name", peer.Name, "addr", peer.Addr)
-	sender, err := transport.Dial(peer.Addr, e.password, e.logger)
+	sender, err := transport.Dial(peer.Addr, e.password, e.localAddr, e.logger)
 	if err != nil {
 		e.logger.Warn("failed to connect to peer", "name", peer.Name, "error", err)
 		return

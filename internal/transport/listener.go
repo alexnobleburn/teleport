@@ -19,11 +19,16 @@ type listenerImpl struct {
 	logger    *slog.Logger
 }
 
-// NewListener creates a TCP listener with AES-GCM encryption.
+// NewListener creates a TCP listener on all interfaces at the given port.
 func NewListener(port int, password string, logger *slog.Logger) (Listener, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	return NewListenerAddr(fmt.Sprintf(":%d", port), password, logger)
+}
+
+// NewListenerAddr creates a TCP listener on a specific address (e.g. "192.168.0.137:9878").
+func NewListenerAddr(addr, password string, logger *slog.Logger) (Listener, error) {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
 	return &listenerImpl{
 		ln:        ln,
@@ -179,8 +184,16 @@ func (l *listenerImpl) Close() error {
 }
 
 // Dial connects to a peer and performs handshake as initiator.
-func Dial(addr, password string, logger *slog.Logger) (Sender, error) {
-	raw, err := net.DialTimeout("tcp", addr, handshakeTimeout)
+// localAddr is optional — if non-empty, binds the outgoing connection to this
+// local IP (e.g. "192.168.0.137") to force traffic through a specific interface,
+// bypassing VPN routing.
+func Dial(addr, password string, localAddr string, logger *slog.Logger) (Sender, error) {
+	dialer := &net.Dialer{Timeout: handshakeTimeout}
+	if localAddr != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localAddr)}
+	}
+
+	raw, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}

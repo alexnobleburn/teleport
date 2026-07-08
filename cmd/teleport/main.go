@@ -68,7 +68,8 @@ func main() {
 		disc = discovery.NewMulticast(*name, *port, logger)
 	}
 
-	// VPN bypass: add direct route for peer IP
+	// VPN bypass: detect local interface and bind connections to it
+	var localAddr string
 	if *bypassVPN {
 		if *peerAddr == "" {
 			logger.Error("-bypass-vpn requires -peer flag")
@@ -85,6 +86,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer directRoute.Remove()
+		localAddr = directRoute.LocalIP
 	}
 
 	// Staging
@@ -95,8 +97,12 @@ func main() {
 	}
 	logger.Debug("staging directory", "path", stager.Path())
 
-	// Transport Listener
-	lst, err := transport.NewListener(*port, *pass, logger)
+	// Transport Listener (bind to localAddr if VPN bypass, otherwise all interfaces)
+	listenAddr := fmt.Sprintf(":%d", *port)
+	if localAddr != "" {
+		listenAddr = fmt.Sprintf("%s:%d", localAddr, *port)
+	}
+	lst, err := transport.NewListenerAddr(listenAddr, *pass, logger)
 	if err != nil {
 		logger.Error("failed to start listener", "error", err)
 		os.Exit(1)
@@ -104,7 +110,7 @@ func main() {
 	defer lst.Close()
 
 	// Sync Engine
-	eng := sync.New(clip, disc, lst, stager, *pass, *name, *textOnly, logger)
+	eng := sync.New(clip, disc, lst, stager, *pass, *name, *textOnly, localAddr, logger)
 
 	// Graceful shutdown. os.Interrupt only — SIGTERM is not supported on Windows.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

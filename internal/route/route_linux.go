@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build linux
 
 package route
 
@@ -8,11 +8,11 @@ import (
 )
 
 func (r *DirectRoute) add() error {
-	// Delete any existing route first (VPN may have injected one)
-	exec.Command("route", "delete", "-host", r.PeerIP).Run()
+	// ip route add <peerIP>/32 via <gateway> dev <iface>
+	// First delete any existing route
+	exec.Command("ip", "route", "del", r.PeerIP+"/32").Run()
 
-	// route add -host <peerIP> <gateway>
-	cmd := exec.Command("route", "add", "-host", r.PeerIP, r.Gateway)
+	cmd := exec.Command("ip", "route", "add", r.PeerIP+"/32", "via", r.Gateway)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, string(out))
@@ -21,8 +21,7 @@ func (r *DirectRoute) add() error {
 }
 
 func (r *DirectRoute) remove() error {
-	// sudo route delete -host <peerIP>
-	cmd := exec.Command("route", "delete", "-host", r.PeerIP)
+	cmd := exec.Command("ip", "route", "del", r.PeerIP+"/32")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, string(out))
