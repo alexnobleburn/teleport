@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"time"
 
 	"teleport/internal/clipboard"
 	"teleport/internal/discovery"
+	"teleport/internal/route"
 	"teleport/internal/staging"
 	"teleport/internal/sync"
 	"teleport/internal/transport"
@@ -25,6 +27,7 @@ func main() {
 	verbose := flag.Bool("verbose", false, "enable debug logging")
 	textOnly := flag.Bool("text-only", false, "sync text only, no files")
 	pollInterval := flag.Duration("poll-interval", 300*time.Millisecond, "clipboard poll interval (macOS only)")
+	bypassVPN := flag.Bool("bypass-vpn", false, "add direct route to peer IP bypassing VPN (requires admin/sudo)")
 	logJSON := flag.Bool("log-json", false, "output logs in JSON format")
 	flag.Parse()
 
@@ -63,6 +66,25 @@ func main() {
 		logger.Info("using direct peer", "addr", *peerAddr)
 	} else {
 		disc = discovery.NewMulticast(*name, *port, logger)
+	}
+
+	// VPN bypass: add direct route for peer IP
+	if *bypassVPN {
+		if *peerAddr == "" {
+			logger.Error("-bypass-vpn requires -peer flag")
+			os.Exit(1)
+		}
+		host, _, err := net.SplitHostPort(*peerAddr)
+		if err != nil {
+			logger.Error("invalid -peer address", "error", err)
+			os.Exit(1)
+		}
+		directRoute, err := route.EnsureDirectRoute(host, logger)
+		if err != nil {
+			logger.Error("failed to add direct route (run as admin/sudo?)", "error", err)
+			os.Exit(1)
+		}
+		defer directRoute.Remove()
 	}
 
 	// Staging
