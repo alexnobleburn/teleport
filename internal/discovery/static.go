@@ -1,9 +1,15 @@
 package discovery
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+const retryInterval = 5 * time.Second
 
 // staticDiscovery is used with -peer host:port flag.
-// Discover immediately returns one Peer. Announce is a no-op.
+// Discover sends the peer immediately, then resends every retryInterval
+// to allow reconnection if the first attempt fails.
 type staticDiscovery struct {
 	peer Peer
 }
@@ -19,14 +25,37 @@ func NewStatic(addr string) Discovery {
 }
 
 func (d *staticDiscovery) Announce(ctx context.Context) error {
-	// No-op: direct connection, no announcement needed.
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func (d *staticDiscovery) Discover(ctx context.Context) (<-chan Peer, error) {
 	ch := make(chan Peer, 1)
-	ch <- d.peer
-	close(ch)
+	go func() {
+		defer close(ch)
+
+		// Send immediately
+		select {
+		case ch <- d.peer:
+		case <-ctx.Done():
+			return
+		}
+
+		// Resend periodically to allow reconnection
+		ticker := time.NewTicker(retryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case ch <- d.peer:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
 	return ch, nil
 }
