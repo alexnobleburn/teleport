@@ -64,6 +64,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	fatalErr := make(chan error, 4)
 
+	// Close listener when ctx is cancelled to unblock Accept()
+	if e.listener != nil {
+		go func() {
+			<-ctx.Done()
+			e.listener.Close()
+		}()
+	}
+
 	// 1. Listener: accept incoming TCP connections (per-connection handler)
 	if e.listener != nil {
 		wg.Add(1)
