@@ -94,8 +94,8 @@ func (c *darwinClipboard) setFileRefsImpl(paths []string) ([32]byte, error) {
 	hash := hashPathsDarwin(paths)
 	c.mu.Lock()
 	c.lastHash = hash
-	c.lastChangeCount = int64(C.getChangeCount())
 	c.mu.Unlock()
+	c.updateChangeCount()
 
 	return hash, nil
 }

@@ -150,3 +150,9 @@ func (c *darwinClipboard) Hash() ([32]byte, error) {
 	return hash, nil
 }
 
+// updateChangeCount snapshots the current NSPasteboard changeCount.
+// Called from darwin_files.go after modifying the pasteboard.
+func (c *darwinClipboard) updateChangeCount() {
+	c.lastChangeCount = int64(C.getChangeCount())
+}
+
