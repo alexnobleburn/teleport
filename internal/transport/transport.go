@@ -39,12 +39,17 @@ type Sender interface {
 	Close() error
 }
 
+// ConnHandler is called when a new inbound connection is established.
+// sender can be used to send data back to the peer over the same TCP connection.
+type ConnHandler func(sender Sender)
+
 // Listener accepts incoming encrypted TCP connections.
 type Listener interface {
 	// Accept accepts incoming connections. For each connection, calls newHandler()
 	// to create a per-connection ReceiveHandler (avoids shared mutable state).
+	// onConnect is called with a Sender for each successful inbound connection.
 	// Blocking, cancelled via ctx.
-	Accept(ctx context.Context, newHandler func() ReceiveHandler) error
+	Accept(ctx context.Context, newHandler func() ReceiveHandler, onConnect ConnHandler) error
 	// Addr returns the listen address (host:port).
 	Addr() string
 	Close() error

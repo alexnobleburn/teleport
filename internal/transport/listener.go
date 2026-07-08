@@ -37,7 +37,7 @@ func NewListenerAddr(addr, password string, logger *slog.Logger) (Listener, erro
 	}, nil
 }
 
-func (l *listenerImpl) Accept(ctx context.Context, newHandler func() ReceiveHandler) error {
+func (l *listenerImpl) Accept(ctx context.Context, newHandler func() ReceiveHandler, onConnect ConnHandler) error {
 	for {
 		raw, err := l.ln.Accept()
 		if err != nil {
@@ -50,30 +50,44 @@ func (l *listenerImpl) Accept(ctx context.Context, newHandler func() ReceiveHand
 			l.logger.Error("accept failed", "error", err)
 			continue
 		}
-		handler := newHandler() // per-connection handler, no shared mutable state
-		go l.handleConn(ctx, raw, handler)
+		handler := newHandler()
+		go l.handleConn(ctx, raw, handler, onConnect)
 	}
 }
 
-func (l *listenerImpl) handleConn(ctx context.Context, raw net.Conn, handler ReceiveHandler) {
-	defer raw.Close()
+func (l *listenerImpl) handleConn(ctx context.Context, raw net.Conn, handler ReceiveHandler, onConnect ConnHandler) {
 	addr := raw.RemoteAddr().String()
 
 	raw.SetDeadline(time.Now().Add(handshakeTimeout))
 	sc, err := Handshake(raw, l.masterKey, false)
 	if err != nil {
+		raw.Close()
 		l.logger.Warn("handshake failed", "addr", addr, "error", err)
 		return
 	}
 	raw.SetDeadline(time.Time{})
 	l.logger.Info("peer connected (inbound)", "addr", addr)
 
-	l.readLoop(ctx, sc, handler)
+	// Create a Sender on this connection for bidirectional communication.
+	// Sender's single-writer goroutine serializes all writes (including Pong).
+	sender := NewSender(sc, l.logger)
+
+	// Notify engine about the new inbound sender
+	if onConnect != nil {
+		onConnect(sender)
+	}
+
+	// readLoop is the sole reader. Sender is the sole writer.
+	l.readLoop(ctx, sc, sender, handler)
+
+	// Connection done — close sender (closes underlying TCP)
+	sender.Close()
 }
 
 // readLoop reads frames sequentially. File transfers are read synchronously
 // (no goroutine) to avoid data races on SecureConn.recvSeq.
-func (l *listenerImpl) readLoop(ctx context.Context, sc *SecureConn, handler ReceiveHandler) {
+// sender is used for writing Pong responses (serialized via single-writer goroutine).
+func (l *listenerImpl) readLoop(ctx context.Context, sc *SecureConn, sender Sender, handler ReceiveHandler) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -105,11 +119,10 @@ func (l *listenerImpl) readLoop(ctx context.Context, sc *SecureConn, handler Rec
 			handler.OnBatchEnd()
 
 		case MsgPing:
-			// Pong is written from the read loop goroutine. This is safe because
-			// the read loop is the only goroutine that uses this SecureConn —
-			// the listener does NOT create a Sender on accepted connections.
-			// The outbound Sender (from Dial) uses a separate SecureConn.
-			_ = sc.WriteFrame(MsgPong, nil)
+			// Pong goes through the Sender's single-writer goroutine (no direct sc.WriteFrame)
+			if s, ok := sender.(*senderImpl); ok {
+				s.do(func() error { return sc.WriteFrame(MsgPong, nil) })
+			}
 
 		case MsgPong:
 			// Handled by ping logic

@@ -81,9 +81,23 @@ func (e *Engine) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := e.listener.Accept(ctx, func() transport.ReceiveHandler {
-				return &receiveHandler{engine: e}
-			})
+			err := e.listener.Accept(ctx,
+				func() transport.ReceiveHandler {
+					return &receiveHandler{engine: e}
+				},
+				func(sender transport.Sender) {
+					// Inbound connection: use this sender for bidirectional communication
+					e.senderMu.Lock()
+					old := e.sender
+					e.sender = sender
+					e.senderAddr = "inbound"
+					e.senderMu.Unlock()
+					if old != nil {
+						old.Close()
+					}
+					e.logger.Info("using inbound connection for sending")
+				},
+			)
 			if err != nil && ctx.Err() == nil {
 				e.logger.Error("listener failed", "error", err)
 				fatalErr <- err
@@ -154,9 +168,9 @@ func (e *Engine) discoverLoop(ctx context.Context) error {
 }
 
 func (e *Engine) connectToPeer(peer discovery.Peer) {
-	// Dedup: skip if already connected to this address
+	// Skip if already connected (outbound or inbound)
 	e.senderMu.Lock()
-	if e.senderAddr == peer.Addr && e.sender != nil {
+	if e.sender != nil {
 		e.senderMu.Unlock()
 		return
 	}

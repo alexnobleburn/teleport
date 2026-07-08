@@ -332,7 +332,7 @@ func TestListenerDial(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go lst.Accept(ctx, func() ReceiveHandler { return handler })
+	go lst.Accept(ctx, func() ReceiveHandler { return handler }, nil)
 
 	// Dial
 	sender, err := Dial(lst.Addr(), password, "", logger)
