@@ -335,7 +335,7 @@ func TestListenerDial(t *testing.T) {
 	go lst.Accept(ctx, func() ReceiveHandler { return handler }, nil)
 
 	// Dial
-	sender, err := Dial(lst.Addr(), password, "", logger)
+	sender, err := Dial(lst.Addr(), password, "", nil, logger)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

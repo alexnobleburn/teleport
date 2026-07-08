@@ -177,7 +177,8 @@ func (e *Engine) connectToPeer(peer discovery.Peer) {
 	e.senderMu.Unlock()
 
 	e.logger.Info("connecting to peer", "name", peer.Name, "addr", peer.Addr)
-	sender, err := transport.Dial(peer.Addr, e.password, e.localAddr, e.logger)
+	handler := &receiveHandler{engine: e}
+	sender, err := transport.Dial(peer.Addr, e.password, e.localAddr, handler, e.logger)
 	if err != nil {
 		e.logger.Warn("failed to connect to peer", "name", peer.Name, "error", err)
 		return

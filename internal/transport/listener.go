@@ -196,11 +196,11 @@ func (l *listenerImpl) Close() error {
 	return l.ln.Close()
 }
 
-// Dial connects to a peer and performs handshake as initiator.
-// localAddr is optional — if non-empty, binds the outgoing connection to this
-// local IP (e.g. "192.168.0.137") to force traffic through a specific interface,
-// bypassing VPN routing.
-func Dial(addr, password string, localAddr string, logger *slog.Logger) (Sender, error) {
+// Dial connects to a peer, performs handshake, creates a bidirectional connection.
+// Returns a Sender for sending data. Also starts a readLoop goroutine that calls
+// handler for incoming messages — so both sides can send AND receive on the same TCP.
+// localAddr is optional — if non-empty, binds to this local IP (VPN bypass).
+func Dial(addr, password string, localAddr string, handler ReceiveHandler, logger *slog.Logger) (Sender, error) {
 	dialer := &net.Dialer{Timeout: handshakeTimeout}
 	if localAddr != "" {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localAddr)}
@@ -220,5 +220,17 @@ func Dial(addr, password string, localAddr string, logger *slog.Logger) (Sender,
 	}
 	raw.SetDeadline(time.Time{})
 
-	return NewSender(sc, logger), nil
+	sender := NewSender(sc, logger)
+
+	// Start readLoop in background so we can receive data on this outbound connection.
+	// This makes the connection fully bidirectional.
+	if handler != nil {
+		l := &listenerImpl{logger: logger}
+		go func() {
+			l.readLoop(context.Background(), sc, sender, handler)
+			sender.Close()
+		}()
+	}
+
+	return sender, nil
 }
