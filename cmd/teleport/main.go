@@ -96,8 +96,6 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Debug("staging directory", "path", stager.Path())
-	// Auto-cleanup: remove staged files older than 1 hour, check every 10 minutes
-	stager.StartCleaner(context.Background(), 1*time.Hour, 10*time.Minute)
 
 	// Transport Listener (bind to localAddr if VPN bypass, otherwise all interfaces)
 	listenAddr := fmt.Sprintf(":%d", *port)
@@ -117,6 +115,9 @@ func main() {
 	// Graceful shutdown. os.Interrupt only — SIGTERM is not supported on Windows.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	// Auto-cleanup staged files (older than 1h, check every 10min)
+	stager.StartCleaner(ctx, 1*time.Hour, 10*time.Minute)
 
 	logger.Info("started", "name", *name, "port", *port, "addr", lst.Addr())
 	if err := eng.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

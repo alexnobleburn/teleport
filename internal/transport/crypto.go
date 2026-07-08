@@ -14,18 +14,17 @@ import (
 
 // deriveKey computes master key from password using scrypt.
 // Fixed salt is necessary because both peers must independently derive
-// the same master key from the same password. The real protection against
-// nonce reuse is in session key derivation (HKDF + random salt per connection).
-func deriveKey(password string) [32]byte {
+// the same master key from the same password. Use strong passwords (>12 chars).
+// The real protection against nonce reuse is in session key derivation (HKDF + random salt).
+func deriveKey(password string) ([32]byte, error) {
 	salt := []byte("teleport-master-v1")
-	key, err := scrypt.Key([]byte(password), salt, 32768, 8, 1, 32)
+	key, err := scrypt.Key([]byte(password), salt, 65536, 8, 1, 32)
 	if err != nil {
-		// scrypt only fails on invalid parameters, which are hardcoded
-		panic(fmt.Sprintf("scrypt.Key: %v", err))
+		return [32]byte{}, fmt.Errorf("scrypt.Key: %w", err)
 	}
 	var result [32]byte
 	copy(result[:], key)
-	return result
+	return result, nil
 }
 
 // deriveSessionKey derives a unique session key via HKDF-SHA256.

@@ -31,6 +31,7 @@ type Engine struct {
 
 	sender     transport.Sender
 	senderAddr string
+	connecting bool // true while connectToPeer is in progress
 	senderMu   sync.Mutex
 }
 
@@ -168,13 +169,20 @@ func (e *Engine) discoverLoop(ctx context.Context) error {
 }
 
 func (e *Engine) connectToPeer(peer discovery.Peer) {
-	// Skip if already connected (outbound or inbound)
+	// Skip if already connected or another connectToPeer is in progress
 	e.senderMu.Lock()
-	if e.sender != nil {
+	if e.sender != nil || e.connecting {
 		e.senderMu.Unlock()
 		return
 	}
+	e.connecting = true
 	e.senderMu.Unlock()
+
+	defer func() {
+		e.senderMu.Lock()
+		e.connecting = false
+		e.senderMu.Unlock()
+	}()
 
 	e.logger.Info("connecting to peer", "name", peer.Name, "addr", peer.Addr)
 	handler := &receiveHandler{engine: e}
@@ -206,7 +214,7 @@ func (e *Engine) disconnectPeer() {
 	e.senderMu.Unlock()
 	if old != nil {
 		old.Close()
-		e.logger.Warn("disconnected from peer, will reconnect")
+		e.logger.Warn("disconnected from peer, waiting for discovery retry")
 	}
 }
 

@@ -10,24 +10,33 @@ import (
 	"testing"
 )
 
+func mustDeriveKey(t *testing.T, password string) [32]byte {
+	t.Helper()
+	k, err := deriveKey(password)
+	if err != nil {
+		t.Fatalf("deriveKey(%q): %v", password, err)
+	}
+	return k
+}
+
 func TestDeriveKey_Deterministic(t *testing.T) {
-	k1 := deriveKey("password123")
-	k2 := deriveKey("password123")
+	k1 := mustDeriveKey(t, "password123")
+	k2 := mustDeriveKey(t, "password123")
 	if k1 != k2 {
 		t.Fatal("same password should produce same key")
 	}
 }
 
 func TestDeriveKey_Different(t *testing.T) {
-	k1 := deriveKey("password1")
-	k2 := deriveKey("password2")
+	k1 := mustDeriveKey(t, "password1")
+	k2 := mustDeriveKey(t, "password2")
 	if k1 == k2 {
 		t.Fatal("different passwords should produce different keys")
 	}
 }
 
 func TestDeriveSessionKey_Deterministic(t *testing.T) {
-	mk := deriveKey("pass")
+	mk := mustDeriveKey(t, "pass")
 	var salt [32]byte
 	copy(salt[:], "fixed-salt-for-test-1234567890ab")
 	sk1 := deriveSessionKey(mk, salt)
@@ -38,7 +47,7 @@ func TestDeriveSessionKey_Deterministic(t *testing.T) {
 }
 
 func TestDeriveSessionKey_DifferentSalt(t *testing.T) {
-	mk := deriveKey("pass")
+	mk := mustDeriveKey(t, "pass")
 	var salt1, salt2 [32]byte
 	copy(salt1[:], "salt-aaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	copy(salt2[:], "salt-bbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -54,7 +63,7 @@ func TestHandshake_Success(t *testing.T) {
 	defer c1.Close()
 	defer c2.Close()
 
-	mk := deriveKey("shared-password")
+	mk := mustDeriveKey(t, "shared-password")
 
 	errCh := make(chan error, 2)
 	var sc1, sc2 *SecureConn
@@ -83,8 +92,8 @@ func TestHandshake_Success(t *testing.T) {
 func TestHandshake_WrongPassword(t *testing.T) {
 	c1, c2 := net.Pipe()
 
-	mk1 := deriveKey("password-A")
-	mk2 := deriveKey("password-B")
+	mk1 := mustDeriveKey(t, "password-A")
+	mk2 := mustDeriveKey(t, "password-B")
 
 	errCh := make(chan error, 2)
 
@@ -120,7 +129,7 @@ func setupPair(t *testing.T) (*SecureConn, *SecureConn) {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	mk := deriveKey("test")
+	mk := mustDeriveKey(t, "test")
 	type result struct {
 		sc  *SecureConn
 		err error

@@ -68,7 +68,7 @@ func (m *Manager) Stage(name string, size int64, checksum [32]byte, r io.Reader)
 		return "", fmt.Errorf("checksum mismatch for %q: expected %x, got %x", name, checksum[:8], actual[:8])
 	}
 
-	m.logger.Info("file staged", "name", name, "size", HumanSize(written), "path", path)
+	m.logger.Info("file staged", "name", name, "size", humanSize(written), "path", path)
 	return path, nil
 }
 
@@ -132,14 +132,15 @@ func (m *Manager) StartCleaner(ctx context.Context, maxAge, interval time.Durati
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				m.Clean(maxAge)
+				if _, err := m.Clean(maxAge); err != nil {
+					m.logger.Debug("staging clean error", "error", err)
+				}
 			}
 		}
 	}()
 }
 
-// HumanSize formats bytes as a human-readable string.
-func HumanSize(bytes int64) string {
+func humanSize(bytes int64) string {
 	switch {
 	case bytes >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))

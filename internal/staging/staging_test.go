@@ -135,7 +135,7 @@ func TestClean_OldFiles(t *testing.T) {
 	}
 }
 
-func TestHumanSize(t *testing.T) {
+func Test_humanSize(t *testing.T) {
 	tests := []struct {
 		bytes int64
 		want  string
@@ -148,9 +148,9 @@ func TestHumanSize(t *testing.T) {
 		{1073741824, "1.0 GB"},
 	}
 	for _, tt := range tests {
-		got := HumanSize(tt.bytes)
+		got := humanSize(tt.bytes)
 		if got != tt.want {
-			t.Errorf("HumanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
+			t.Errorf("humanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
 		}
 	}
 }

@@ -26,13 +26,17 @@ func NewListener(port int, password string, logger *slog.Logger) (Listener, erro
 
 // NewListenerAddr creates a TCP listener on a specific address (e.g. "192.168.0.137:9878").
 func NewListenerAddr(addr, password string, logger *slog.Logger) (Listener, error) {
+	masterKey, err := deriveKey(password)
+	if err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
 	return &listenerImpl{
 		ln:        ln,
-		masterKey: deriveKey(password),
+		masterKey: masterKey,
 		logger:    logger,
 	}, nil
 }
@@ -211,7 +215,11 @@ func Dial(addr, password string, localAddr string, handler ReceiveHandler, logge
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 
-	masterKey := deriveKey(password)
+	masterKey, err := deriveKey(password)
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
 	raw.SetDeadline(time.Now().Add(handshakeTimeout))
 	sc, err := Handshake(raw, masterKey, true)
 	if err != nil {
