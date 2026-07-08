@@ -43,11 +43,13 @@ go build -o teleport.exe ./cmd/teleport
 CGO_ENABLED=1 go build -o teleport ./cmd/teleport
 ```
 
-### Download from GitHub Releases
+### Download binary
 
-Go to [Releases](https://github.com/alexnobleburn/teleport/releases) and download:
+Go to [Releases](https://github.com/alexnobleburn/teleport/releases/latest) and download the latest version:
 - `teleport-windows-amd64.exe` — for Windows
 - `teleport-macos-arm64` — for macOS (Apple Silicon)
+
+No installation needed — just download and run.
 
 ## 🛠️ Usage
 
