@@ -52,11 +52,10 @@ func (m *Manager) Stage(name string, size int64, checksum [32]byte, r io.Reader)
 
 	path := m.uniquePath(name)
 
-	// Ensure parent directories exist (for names with subdirectories)
-	if dir := filepath.Dir(path); dir != m.dir {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", fmt.Errorf("create staged subdirs: %w", err)
-		}
+	// Ensure parent directories exist (for names with subdirectories).
+	// Always call MkdirAll — it is idempotent and avoids path comparison issues on Windows.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create staged subdirs: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
