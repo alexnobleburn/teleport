@@ -17,12 +17,13 @@ type ClipData struct {
 	Files []FileMeta // KindFiles: file metadata
 }
 
-// FileMeta describes a file in the clipboard.
+// FileMeta describes a file or directory in the clipboard.
 type FileMeta struct {
 	Name      string   // file name (no path)
-	Size      int64    // size in bytes
+	Size      int64    // size in bytes (0 for directories)
 	SHA256    [32]byte // checksum
 	LocalPath string   // full path on sender or staged path on receiver
+	IsDir     bool     // true if this is a directory
 }
 
 // Clipboard provides platform-specific clipboard access.

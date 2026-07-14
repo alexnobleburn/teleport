@@ -69,13 +69,11 @@ func (c *windowsClipboard) readFiles() ([]FileMeta, error) {
 		if err != nil {
 			continue
 		}
-		if info.IsDir() {
-			continue // skip directories (Phase 2 scope: files only)
-		}
 		files = append(files, FileMeta{
 			Name:      filepath.Base(p),
 			Size:      info.Size(),
 			LocalPath: p,
+			IsDir:     info.IsDir(),
 		})
 	}
 	return files, nil

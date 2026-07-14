@@ -3,9 +3,13 @@ package sync
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"teleport/internal/clipboard"
@@ -13,6 +17,8 @@ import (
 	"teleport/internal/staging"
 	"teleport/internal/transport"
 )
+
+const maxDirFiles = 10000 // maximum files per directory to prevent resource exhaustion
 
 // Engine is the main synchronization loop.
 type Engine struct {
@@ -283,37 +289,45 @@ func (e *Engine) handleClipboardChange(data clipboard.ClipData) {
 // sendFiles sends files one at a time: open → hash → seek(0) → send → close.
 // Each file uses O(1) file descriptors. SHA-256 is computed from the same
 // open handle used for sending to avoid TOCTOU issues.
+// Directories are walked recursively — files inside get relative path names
+// (e.g., "MyFolder/sub/file.txt") with forward slash as separator.
 func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
+	// Expand directories into individual files with relative paths.
+	expanded := e.expandDirs(files)
+	if len(expanded) == 0 {
+		return
+	}
+
 	// Pre-compute checksums and validate files exist before starting batch.
-	// Only open one file at a time to keep FD usage at O(1).
 	type fileInfo struct {
-		meta     clipboard.FileMeta
+		name     string // relative name for protocol (may contain /)
+		size     int64
+		path     string // local path for reading
 		checksum [32]byte
 	}
 	var valid []fileInfo
 
-	for _, f := range files {
-		checksum, err := hashFileOnDisk(f.LocalPath)
+	for _, f := range expanded {
+		checksum, err := hashFileOnDisk(f.path)
 		if err != nil {
-			e.logger.Warn("cannot hash file for sending", "path", f.LocalPath, "error", err)
+			e.logger.Warn("cannot hash file for sending", "path", f.path, "error", err)
 			continue
 		}
-		valid = append(valid, fileInfo{meta: f, checksum: checksum})
+		valid = append(valid, fileInfo{name: f.name, size: f.size, path: f.path, checksum: checksum})
 	}
 
 	if len(valid) == 0 {
 		return
 	}
 
-	// Build FileToSend with lazy readers — each file opened only when SendFiles
-	// reads from it. We use a wrapper that opens the file on first Read call.
+	// Build FileToSend with lazy readers.
 	toSend := make([]transport.FileToSend, len(valid))
 	for i, v := range valid {
 		toSend[i] = transport.FileToSend{
-			Name:     v.meta.Name,
-			Size:     v.meta.Size,
+			Name:     v.name,
+			Size:     v.size,
 			Checksum: v.checksum,
-			Reader:   &lazyFileReader{path: v.meta.LocalPath},
+			Reader:   &lazyFileReader{path: v.path},
 		}
 	}
 
@@ -332,6 +346,78 @@ func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
 		return
 	}
 	e.logger.Info("files synced", "count", len(toSend), "direction", "sent")
+}
+
+// expandedFile is a file ready to send with its protocol name and local path.
+type expandedFile struct {
+	name string // protocol name, may contain / for directory files
+	size int64
+	path string // local filesystem path
+}
+
+// errTooManyFiles is returned by expandDirs when a directory exceeds maxDirFiles.
+var errTooManyFiles = fmt.Errorf("directory contains more than %d files", maxDirFiles)
+
+// expandDirs expands directories into individual files with relative paths.
+// Regular files are passed through as-is. Directory entries are walked recursively.
+// Symlinks are skipped to prevent escaping the source directory.
+// Names use forward slash as separator for cross-platform compatibility.
+func (e *Engine) expandDirs(files []clipboard.FileMeta) []expandedFile {
+	var result []expandedFile
+	for _, f := range files {
+		if !f.IsDir {
+			result = append(result, expandedFile{
+				name: f.Name,
+				size: f.Size,
+				path: f.LocalPath,
+			})
+			continue
+		}
+		// Walk directory recursively, skip symlinks
+		dirName := f.Name
+		dirPath := f.LocalPath
+		count := 0
+		err := filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				e.logger.Warn("walk error", "path", path, "error", err)
+				return nil
+			}
+			// Skip symlinks to prevent following links outside the directory
+			if d.Type()&os.ModeSymlink != 0 {
+				e.logger.Debug("skipping symlink", "path", path)
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			count++
+			if count > maxDirFiles {
+				return errTooManyFiles
+			}
+			info, err := d.Info()
+			if err != nil {
+				e.logger.Warn("stat error", "path", path, "error", err)
+				return nil
+			}
+			rel, err := filepath.Rel(dirPath, path)
+			if err != nil {
+				return nil
+			}
+			name := dirName + "/" + strings.ReplaceAll(rel, string(filepath.Separator), "/")
+			result = append(result, expandedFile{
+				name: name,
+				size: info.Size(),
+				path: path,
+			})
+			return nil
+		})
+		if err != nil {
+			e.logger.Warn("walk directory failed", "dir", dirPath, "count", count, "error", err)
+		} else {
+			e.logger.Debug("directory expanded", "dir", dirName, "files", count)
+		}
+	}
+	return result
 }
 
 // hashFileOnDisk computes SHA-256 of a file. Opens and closes the file.

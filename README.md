@@ -4,7 +4,7 @@ P2P clipboard sync between Windows and macOS over LAN. Copy on one device, paste
 
 ## ✨ Features
 
-- 📋 **Text & files** — copy text or files, paste on the other device
+- 📋 **Text, files & folders** — copy text, files, or entire folders, paste on the other device
 - 🔒 **Encrypted** — AES-256-GCM with scrypt key derivation, unique session key per connection
 - 🔍 **Zero config** — auto-discovery via UDP multicast, or direct connect with `-peer`
 - 🌐 **No server** — peer-to-peer, everything stays on your local network
@@ -106,7 +106,7 @@ sudo ./teleport -pass "secret" -peer 192.168.0.137:9878 -bypass-vpn
 3. 📥 Peer receives, decrypts, puts into local clipboard
 4. 📋 User pastes normally (Ctrl+V / Cmd+V)
 
-Files are transferred eagerly (at copy time) and saved to `~/.teleport/staged/` before being placed in the clipboard as file references.
+Files and folders are transferred eagerly (at copy time) and saved to `~/.teleport/staged/` before being placed in the clipboard as file references. Folders are walked recursively — the entire directory structure is preserved.
 
 ## 🌐 Network Requirements
 

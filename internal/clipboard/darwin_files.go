@@ -68,13 +68,14 @@ func (c *darwinClipboard) readFilesMeta() ([]FileMeta, error) {
 	var files []FileMeta
 	for _, p := range paths {
 		info, err := os.Stat(p)
-		if err != nil || info.IsDir() {
+		if err != nil {
 			continue
 		}
 		files = append(files, FileMeta{
 			Name:      filepath.Base(p),
 			Size:      info.Size(),
 			LocalPath: p,
+			IsDir:     info.IsDir(),
 		})
 	}
 	return files, nil
