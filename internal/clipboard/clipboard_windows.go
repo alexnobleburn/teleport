@@ -15,6 +15,11 @@ import (
 	"unsafe"
 )
 
+const (
+	clipRetries  = 5
+	clipRetryMs  = 30 // milliseconds between retries
+)
+
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
@@ -138,7 +143,7 @@ func (c *windowsClipboard) Watch(ctx context.Context) (<-chan ClipData, error) {
 			if m.message == wmClipboardUpdate {
 				data, hash, err := c.readCurrent()
 				if err != nil {
-					c.logger.Debug("clipboard read failed", "error", err)
+					c.logger.Warn("clipboard read failed", "error", err)
 					continue
 				}
 				c.mu.Lock()
@@ -197,19 +202,36 @@ func (c *windowsClipboard) createHiddenWindow() (uintptr, error) {
 }
 
 func (c *windowsClipboard) readCurrent() (ClipData, [32]byte, error) {
-	// CF_HDROP takes priority over CF_UNICODETEXT because Explorer sets both
-	files, err := c.readFiles()
-	if err == nil && len(files) > 0 {
-		hash := HashFiles(files)
-		return ClipData{Kind: KindFiles, Files: files}, hash, nil
-	}
+	// Retry loop: OpenClipboard can fail when another app (e.g. Clipboard History)
+	// holds the clipboard briefly after a change.
+	var (
+		files   []FileMeta
+		text    string
+		fileErr error
+		textErr error
+	)
+	for attempt := 0; attempt < clipRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(clipRetryMs) * time.Millisecond)
+		}
+		// CF_HDROP takes priority over CF_UNICODETEXT
+		files, fileErr = c.readFiles()
+		if fileErr == nil && len(files) > 0 {
+			hash := HashFiles(files)
+			return ClipData{Kind: KindFiles, Files: files}, hash, nil
+		}
 
-	text, err := c.readText()
-	if err != nil {
-		return ClipData{}, [32]byte{}, err
+		text, textErr = c.readText()
+		if textErr == nil {
+			hash := HashText(text)
+			return ClipData{Kind: KindText, Text: text}, hash, nil
+		}
 	}
-	hash := HashText(text)
-	return ClipData{Kind: KindText, Text: text}, hash, nil
+	// All retries exhausted
+	if fileErr != nil {
+		return ClipData{}, [32]byte{}, fmt.Errorf("read clipboard after %d retries: %w", clipRetries, fileErr)
+	}
+	return ClipData{}, [32]byte{}, fmt.Errorf("read clipboard after %d retries: %w", clipRetries, textErr)
 }
 
 func (c *windowsClipboard) readText() (string, error) {
@@ -300,6 +322,10 @@ func (c *windowsClipboard) SetFileRefs(paths []string) ([32]byte, error) {
 }
 
 func (c *windowsClipboard) Hash() ([32]byte, error) {
+	files, err := c.readFiles()
+	if err == nil && len(files) > 0 {
+		return HashFiles(files), nil
+	}
 	text, err := c.readText()
 	if err != nil {
 		return [32]byte{}, err

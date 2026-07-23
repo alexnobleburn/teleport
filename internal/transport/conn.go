@@ -19,15 +19,29 @@ import (
 //     is the sole reader, including file chunk reads in handleFileTransfer.
 //
 // SecureConn itself has NO mutexes.
+//
+// Nonce isolation: initiator and acceptor use different nonce prefixes
+// (0x00000000 and 0x00000001) to prevent nonce reuse on bidirectional connections
+// that share the same AES-GCM key.
 type SecureConn struct {
-	raw     net.Conn
-	aead    cipher.AEAD
-	sendSeq uint64
-	recvSeq uint64
+	raw        net.Conn
+	aead       cipher.AEAD
+	sendSeq    uint64
+	recvSeq    uint64
+	sendPrefix uint32 // nonce prefix for outgoing frames
+	recvPrefix uint32 // nonce prefix for incoming frames
 }
 
-func newSecureConn(raw net.Conn, aead cipher.AEAD) *SecureConn {
-	return &SecureConn{raw: raw, aead: aead, sendSeq: 1, recvSeq: 1}
+func newSecureConn(raw net.Conn, aead cipher.AEAD, initiator bool) *SecureConn {
+	sc := &SecureConn{raw: raw, aead: aead, sendSeq: 1, recvSeq: 1}
+	if initiator {
+		sc.sendPrefix = 0
+		sc.recvPrefix = 1
+	} else {
+		sc.sendPrefix = 1
+		sc.recvPrefix = 0
+	}
+	return sc
 }
 
 // WriteFrame encrypts and sends a single frame: [4-byte length][encrypted payload].
@@ -36,7 +50,7 @@ func (sc *SecureConn) WriteFrame(msgType MsgType, payload []byte) error {
 	plaintext[0] = byte(msgType)
 	copy(plaintext[1:], payload)
 
-	nonce := makeNonce(sc.sendSeq)
+	nonce := makeNonce(sc.sendSeq, sc.sendPrefix)
 	sc.sendSeq++
 
 	ciphertext := sc.aead.Seal(nil, nonce[:], plaintext, nil)
@@ -75,7 +89,7 @@ func (sc *SecureConn) ReadFrame() (MsgType, []byte, error) {
 		return 0, nil, fmt.Errorf("read payload: %w", err)
 	}
 
-	nonce := makeNonce(sc.recvSeq)
+	nonce := makeNonce(sc.recvSeq, sc.recvPrefix)
 	sc.recvSeq++
 
 	plaintext, err := sc.aead.Open(nil, nonce[:], ciphertext, nil)
@@ -149,7 +163,7 @@ func handshakeInitiator(raw net.Conn, masterKey [32]byte) (*SecureConn, error) {
 		return nil, errors.New("handshake failed: invalid magic")
 	}
 
-	return newSecureConn(raw, aead), nil
+	return newSecureConn(raw, aead, true), nil
 }
 
 func handshakeAcceptor(raw net.Conn, masterKey [32]byte) (*SecureConn, error) {
@@ -194,5 +208,5 @@ func handshakeAcceptor(raw net.Conn, masterKey [32]byte) (*SecureConn, error) {
 		return nil, fmt.Errorf("write response magic: %w", err)
 	}
 
-	return newSecureConn(raw, aead), nil
+	return newSecureConn(raw, aead, false), nil
 }

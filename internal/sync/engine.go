@@ -102,6 +102,7 @@ func (e *Engine) Run(ctx context.Context) error {
 					if old != nil {
 						old.Close()
 					}
+					e.monitorSender(sender)
 					e.logger.Info("using inbound connection for sending")
 				},
 			)
@@ -169,12 +170,12 @@ func (e *Engine) discoverLoop(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			go e.connectToPeer(peer)
+			go e.connectToPeer(ctx, peer)
 		}
 	}
 }
 
-func (e *Engine) connectToPeer(peer discovery.Peer) {
+func (e *Engine) connectToPeer(ctx context.Context, peer discovery.Peer) {
 	// Skip if already connected or another connectToPeer is in progress
 	e.senderMu.Lock()
 	if e.sender != nil || e.connecting {
@@ -192,7 +193,7 @@ func (e *Engine) connectToPeer(peer discovery.Peer) {
 
 	e.logger.Info("connecting to peer", "name", peer.Name, "addr", peer.Addr)
 	handler := &receiveHandler{engine: e}
-	sender, err := transport.Dial(peer.Addr, e.password, e.localAddr, handler, e.logger)
+	sender, err := transport.Dial(ctx, peer.Addr, e.password, e.localAddr, handler, e.logger)
 	if err != nil {
 		e.logger.Warn("failed to connect to peer", "name", peer.Name, "error", err)
 		return
@@ -207,6 +208,7 @@ func (e *Engine) connectToPeer(peer discovery.Peer) {
 	if old != nil {
 		old.Close()
 	}
+	e.monitorSender(sender)
 	e.logger.Info("connected", "peer", peer.Name, "addr", peer.Addr)
 }
 
@@ -222,6 +224,24 @@ func (e *Engine) disconnectPeer() {
 		old.Close()
 		e.logger.Warn("disconnected from peer, waiting for discovery retry")
 	}
+}
+
+// monitorSender watches for sender death (connection closed/broken).
+// When the sender's Done() channel fires, resets e.sender to nil if it
+// still points to the same sender — allowing discovery to reconnect.
+func (e *Engine) monitorSender(s transport.Sender) {
+	go func() {
+		<-s.Done()
+		e.senderMu.Lock()
+		if e.sender == s {
+			e.sender = nil
+			e.senderAddr = ""
+			e.senderMu.Unlock()
+			e.logger.Warn("connection lost, waiting for reconnection")
+		} else {
+			e.senderMu.Unlock()
+		}
+	}()
 }
 
 func (e *Engine) clipboardLoop(ctx context.Context) error {
@@ -287,8 +307,7 @@ func (e *Engine) handleClipboardChange(data clipboard.ClipData) {
 }
 
 // sendFiles sends files one at a time: open → hash → seek(0) → send → close.
-// Each file uses O(1) file descriptors. SHA-256 is computed from the same
-// open handle used for sending to avoid TOCTOU issues.
+// Each file is hashed and sent from the same open handle to avoid TOCTOU issues.
 // Directories are walked recursively — files inside get relative path names
 // (e.g., "MyFolder/sub/file.txt") with forward slash as separator.
 func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
@@ -298,46 +317,58 @@ func (e *Engine) sendFiles(s transport.Sender, files []clipboard.FileMeta) {
 		return
 	}
 
-	// Pre-compute checksums and validate files exist before starting batch.
+	// Open, hash, and seek(0) each file. Same handle is used for sending.
 	type fileInfo struct {
-		name     string // relative name for protocol (may contain /)
+		name     string
 		size     int64
-		path     string // local path for reading
 		checksum [32]byte
+		file     *os.File
 	}
 	var valid []fileInfo
 
 	for _, f := range expanded {
-		checksum, err := hashFileOnDisk(f.path)
+		file, err := os.Open(f.path)
 		if err != nil {
+			e.logger.Warn("cannot open file for sending", "path", f.path, "error", err)
+			continue
+		}
+		h := sha256.New()
+		n, err := io.Copy(h, file)
+		if err != nil {
+			file.Close()
 			e.logger.Warn("cannot hash file for sending", "path", f.path, "error", err)
 			continue
 		}
-		valid = append(valid, fileInfo{name: f.name, size: f.size, path: f.path, checksum: checksum})
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			file.Close()
+			e.logger.Warn("cannot seek file for sending", "path", f.path, "error", err)
+			continue
+		}
+		var checksum [32]byte
+		copy(checksum[:], h.Sum(nil))
+		valid = append(valid, fileInfo{name: f.name, size: n, checksum: checksum, file: file})
 	}
 
 	if len(valid) == 0 {
 		return
 	}
 
-	// Build FileToSend with lazy readers.
+	// Build FileToSend using already-opened file handles.
 	toSend := make([]transport.FileToSend, len(valid))
 	for i, v := range valid {
 		toSend[i] = transport.FileToSend{
 			Name:     v.name,
 			Size:     v.size,
 			Checksum: v.checksum,
-			Reader:   &lazyFileReader{path: v.path},
+			Reader:   v.file,
 		}
 	}
 
 	err := s.SendFiles(toSend)
 
-	// Close any opened lazy readers
-	for _, f := range toSend {
-		if closer, ok := f.Reader.(io.Closer); ok {
-			closer.Close()
-		}
+	// Close all file handles.
+	for _, v := range valid {
+		v.file.Close()
 	}
 
 	if err != nil {
@@ -420,43 +451,3 @@ func (e *Engine) expandDirs(files []clipboard.FileMeta) []expandedFile {
 	return result
 }
 
-// hashFileOnDisk computes SHA-256 of a file. Opens and closes the file.
-func hashFileOnDisk(path string) ([32]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return [32]byte{}, err
-	}
-	var result [32]byte
-	copy(result[:], h.Sum(nil))
-	return result, nil
-}
-
-// lazyFileReader opens the file on first Read call. This keeps FD usage at O(1)
-// during batch sends — only the file currently being transmitted is open.
-type lazyFileReader struct {
-	path string
-	file *os.File
-}
-
-func (r *lazyFileReader) Read(p []byte) (int, error) {
-	if r.file == nil {
-		f, err := os.Open(r.path)
-		if err != nil {
-			return 0, err
-		}
-		r.file = f
-	}
-	return r.file.Read(p)
-}
-
-func (r *lazyFileReader) Close() error {
-	if r.file != nil {
-		return r.file.Close()
-	}
-	return nil
-}

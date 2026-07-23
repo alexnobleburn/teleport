@@ -30,6 +30,10 @@ func TestParseAnnounce_Invalid(t *testing.T) {
 		"TELEPORT|",
 		"TELEPORT||9878",
 		"TELEPORT|name|",
+		"TELEPORT|name|0",
+		"TELEPORT|name|99999",
+		"TELEPORT|name|abc",
+		"TELEPORT|name|-1",
 		"garbage data",
 	}
 	for _, data := range cases {
@@ -41,7 +45,7 @@ func TestParseAnnounce_Invalid(t *testing.T) {
 
 func TestStatic_SinglePeer(t *testing.T) {
 	disc := NewStatic("localhost:9878")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	ch, err := disc.Discover(ctx)
@@ -57,9 +61,39 @@ func TestStatic_SinglePeer(t *testing.T) {
 		t.Fatalf("addr: got %q", peer.Addr)
 	}
 
-	// Channel should be closed (no more peers)
-	_, ok = <-ch
-	if ok {
-		t.Fatal("expected channel to be closed")
+	// Cancel context to stop the discovery goroutine and close channel.
+	cancel()
+
+	// Drain any peer that was already queued before cancel took effect.
+	for range ch {
+	}
+}
+
+func TestStatic_ReEmit(t *testing.T) {
+	disc := NewStatic("localhost:9878")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	ch, err := disc.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First peer — immediate.
+	peer, ok := <-ch
+	if !ok {
+		t.Fatal("expected first peer")
+	}
+	if peer.Addr != "localhost:9878" {
+		t.Fatalf("addr: got %q", peer.Addr)
+	}
+
+	// Second peer — re-emitted after retryInterval (5s).
+	peer, ok = <-ch
+	if !ok {
+		t.Fatal("expected re-emitted peer")
+	}
+	if peer.Addr != "localhost:9878" {
+		t.Fatalf("re-emitted addr: got %q", peer.Addr)
 	}
 }

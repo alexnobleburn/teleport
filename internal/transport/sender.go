@@ -39,8 +39,18 @@ func NewSender(conn *SecureConn, logger *slog.Logger) Sender {
 func (s *senderImpl) writeLoop() {
 	defer close(s.closed)
 	for op := range s.sendCh {
-		op.done <- op.fn()
+		op.done <- s.safeExec(op.fn)
 	}
+}
+
+func (s *senderImpl) safeExec(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("writeLoop panic: %v", r)
+			s.logger.Error("writeLoop panic", "error", r)
+		}
+	}()
+	return fn()
 }
 
 func (s *senderImpl) do(fn func() error) error {
@@ -133,4 +143,9 @@ func (s *senderImpl) Close() error {
 		err = s.conn.raw.Close()
 	})
 	return err
+}
+
+// Done returns a channel that is closed when the sender's write loop has stopped.
+func (s *senderImpl) Done() <-chan struct{} {
+	return s.closed
 }

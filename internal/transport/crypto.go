@@ -61,9 +61,12 @@ func newAEAD(key [32]byte) (cipher.AEAD, error) {
 	return aead, nil
 }
 
-// makeNonce builds a 12-byte nonce from a counter: [4 zero bytes][8-byte big-endian seq].
-func makeNonce(seq uint64) [NonceSize]byte {
+// makeNonce builds a 12-byte nonce: [4-byte prefix][8-byte big-endian seq].
+// The prefix separates nonce spaces for initiator (0) and acceptor (1),
+// preventing nonce reuse on bidirectional connections sharing the same key.
+func makeNonce(seq uint64, prefix uint32) [NonceSize]byte {
 	var nonce [NonceSize]byte
+	binary.BigEndian.PutUint32(nonce[0:4], prefix)
 	binary.BigEndian.PutUint64(nonce[4:], seq)
 	return nonce
 }

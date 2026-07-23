@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const handshakeTimeout = 5 * time.Second
+const (
+	handshakeTimeout  = 5 * time.Second
+	keepAlivePeriod   = 30 * time.Second
+)
 
 type listenerImpl struct {
 	ln        net.Listener
@@ -62,6 +65,7 @@ func (l *listenerImpl) Accept(ctx context.Context, newHandler func() ReceiveHand
 func (l *listenerImpl) handleConn(ctx context.Context, raw net.Conn, handler ReceiveHandler, onConnect ConnHandler) {
 	addr := raw.RemoteAddr().String()
 
+	enableKeepAlive(raw)
 	raw.SetDeadline(time.Now().Add(handshakeTimeout))
 	sc, err := Handshake(raw, l.masterKey, false)
 	if err != nil {
@@ -200,11 +204,21 @@ func (l *listenerImpl) Close() error {
 	return l.ln.Close()
 }
 
+// enableKeepAlive turns on TCP keepalive to detect dead connections
+// on network partition (no RST from peer).
+func enableKeepAlive(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(keepAlivePeriod)
+	}
+}
+
 // Dial connects to a peer, performs handshake, creates a bidirectional connection.
 // Returns a Sender for sending data. Also starts a readLoop goroutine that calls
 // handler for incoming messages — so both sides can send AND receive on the same TCP.
 // localAddr is optional — if non-empty, binds to this local IP (VPN bypass).
-func Dial(addr, password string, localAddr string, handler ReceiveHandler, logger *slog.Logger) (Sender, error) {
+// ctx controls the readLoop lifetime — cancelled on shutdown.
+func Dial(ctx context.Context, addr, password string, localAddr string, handler ReceiveHandler, logger *slog.Logger) (Sender, error) {
 	dialer := &net.Dialer{Timeout: handshakeTimeout}
 	if localAddr != "" {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localAddr)}
@@ -214,6 +228,8 @@ func Dial(addr, password string, localAddr string, handler ReceiveHandler, logge
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
+
+	enableKeepAlive(raw)
 
 	masterKey, err := deriveKey(password)
 	if err != nil {
@@ -235,7 +251,7 @@ func Dial(addr, password string, localAddr string, handler ReceiveHandler, logge
 	if handler != nil {
 		l := &listenerImpl{logger: logger}
 		go func() {
-			l.readLoop(context.Background(), sc, sender, handler)
+			l.readLoop(ctx, sc, sender, handler)
 			sender.Close()
 		}()
 	}

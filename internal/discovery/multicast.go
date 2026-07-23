@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,18 @@ type multicastDiscovery struct {
 	name    string
 	tcpPort int
 	logger  *slog.Logger
-	known   map[string]Peer
+	known   map[string]peerRecord
 	mu      sync.Mutex
 }
+
+type peerRecord struct {
+	peer     Peer
+	lastSent time.Time
+}
+
+// rediscoverInterval controls how often a known peer is re-emitted
+// to allow reconnection after a disconnect.
+const rediscoverInterval = 10 * time.Second
 
 // NewMulticast creates a Discovery that uses UDP multicast for peer discovery.
 func NewMulticast(name string, tcpPort int, logger *slog.Logger) Discovery {
@@ -30,7 +40,7 @@ func NewMulticast(name string, tcpPort int, logger *slog.Logger) Discovery {
 		name:    name,
 		tcpPort: tcpPort,
 		logger:  logger,
-		known:   make(map[string]Peer),
+		known:   make(map[string]peerRecord),
 	}
 }
 
@@ -112,17 +122,21 @@ func (d *multicastDiscovery) Discover(ctx context.Context) (<-chan Peer, error) 
 				continue
 			}
 
-			// Dedup: only send if new or changed
+			// Dedup: suppress frequent re-sends but allow periodic re-emit for reconnection
+			now := time.Now()
 			d.mu.Lock()
-			existing, exists := d.known[peer.Name]
-			if exists && existing.Addr == peer.Addr {
+			rec, exists := d.known[peer.Name]
+			if exists && rec.peer.Addr == peer.Addr && now.Sub(rec.lastSent) < rediscoverInterval {
 				d.mu.Unlock()
 				continue
 			}
-			d.known[peer.Name] = peer
+			firstTime := !exists || rec.peer.Addr != peer.Addr
+			d.known[peer.Name] = peerRecord{peer: peer, lastSent: now}
 			d.mu.Unlock()
 
-			d.logger.Info("peer discovered", "name", peer.Name, "addr", peer.Addr)
+			if firstTime {
+				d.logger.Info("peer discovered", "name", peer.Name, "addr", peer.Addr)
+			}
 			select {
 			case ch <- peer:
 			case <-ctx.Done():
@@ -143,6 +157,10 @@ func parseAnnounce(data string, src *net.UDPAddr) (Peer, bool) {
 	name := parts[1]
 	port := parts[2]
 	if name == "" || port == "" {
+		return Peer{}, false
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
 		return Peer{}, false
 	}
 	return Peer{

@@ -37,6 +37,9 @@ type Sender interface {
 	// Receiver calls SetFileRefs only after MsgBatchEnd (atomicity).
 	SendFiles(files []FileToSend) error
 	Close() error
+	// Done returns a channel that is closed when the sender is closed
+	// (connection dead). Used by the engine to detect disconnections.
+	Done() <-chan struct{}
 }
 
 // ConnHandler is called when a new inbound connection is established.

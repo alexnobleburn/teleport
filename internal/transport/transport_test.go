@@ -227,11 +227,20 @@ func TestSendReceiveText_Large(t *testing.T) {
 func TestNonceUniqueness(t *testing.T) {
 	seen := make(map[[NonceSize]byte]bool)
 	for i := uint64(0); i < 10000; i++ {
-		n := makeNonce(i)
+		n := makeNonce(i, 0)
 		if seen[n] {
 			t.Fatalf("duplicate nonce at seq %d", i)
 		}
 		seen[n] = true
+	}
+
+	// Verify initiator and acceptor nonce spaces don't overlap.
+	for i := uint64(1); i <= 100; i++ {
+		n0 := makeNonce(i, 0)
+		n1 := makeNonce(i, 1)
+		if n0 == n1 {
+			t.Fatalf("nonce collision between initiator and acceptor at seq %d", i)
+		}
 	}
 }
 
@@ -344,7 +353,7 @@ func TestListenerDial(t *testing.T) {
 	go lst.Accept(ctx, func() ReceiveHandler { return handler }, nil)
 
 	// Dial
-	sender, err := Dial(lst.Addr(), password, "", nil, logger)
+	sender, err := Dial(ctx, lst.Addr(), password, "", nil, logger)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
